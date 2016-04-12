@@ -46,11 +46,11 @@ __END__
 
 =head1 NAME
 
-merge_myapp - merge 'MyApp' DB from source to target
+merge-myapp - merge 'MyApp' DB from source to target
 
 =head1 SYNOPSIS
 
-  merge_myapp [options]
+  merge-myapp [options]
 
   Options:
 

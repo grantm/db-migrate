@@ -10,7 +10,7 @@ conflicts etc.
 A simple wrapper script loads `MyAppMerge.pm` which inherits from `DBMerge.pm`.
 You would need to edit files as follows:
 
-merge_myapp
+merge-myapp
 ===========
 
 Modify this file to define the database connection parameters.
