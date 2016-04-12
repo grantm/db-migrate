@@ -1,0 +1,81 @@
+#!/usr/bin/perl
+
+use 5.010;
+use strict;
+use warnings;
+use autodie;
+
+use FindBin;
+use Pod::Usage;
+use Getopt::Long qw(GetOptions);
+
+use lib $FindBin::Bin . '/lib';
+use MyAppMerge;
+
+$| = 1;   # Turn off output buffering
+
+my %opt = (
+    verbose => 0,
+);
+
+if(!GetOptions(\%opt, 'help|?', 'verbose|v')) {
+    pod2usage(-exitval => 1,  -verbose => 0);
+}
+
+pod2usage(-exitstatus => 0, -verbose => 2) if $opt{help};
+
+
+my($login_name) = getpwuid($>);
+chomp(my $screen_width = `tput cols`);
+
+my $status = MyAppMerge->do_merge(
+    verbose         => $opt{verbose},
+    source_dsn      => "dbi:Pg:dbname=myapp-source",
+    source_db_user  => $login_name,
+    source_db_attr  => { pg_enable_utf8 => 1 },
+    target_dsn      => "dbi:Pg:dbname=myapp-target",
+    target_db_user  => $login_name,
+    target_db_attr  => { pg_enable_utf8 => 1 },
+    dump_width      => $screen_width,
+);
+
+exit($status);
+
+
+__END__
+
+=head1 NAME
+
+merge_myapp - merge 'MyApp' DB from source to target
+
+=head1 SYNOPSIS
+
+  merge_myapp [options]
+
+  Options:
+
+   -v     verbose mode
+   -?     detailed help message
+
+=head1 DESCRIPTION
+
+Description here.
+
+=head1 OPTIONS
+
+=over 4
+
+=item B<--verbose>  (alias -v)
+
+Show more verbose output (e.g.: the SQL INSERT statements).
+
+=item B<--help>  (alias -?)
+
+Display this documentation.
+
+=back
+
+=cut
+
+
+
