@@ -19,7 +19,10 @@ MyAppMerge.pm
 =============
 
 Modify this module to define handling for each table.  The details will be
-specific to your application.  (More details required here).
+specific to your application.  The POD in DBMerge.pm describes the syntax and
+available options:
+
+    perldoc lib/DBMerge.pm
 
 DBMerge.pm
 ==========
