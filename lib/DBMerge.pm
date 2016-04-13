@@ -824,3 +824,419 @@ sub _list_table_columns {
 
 
 __PACKAGE__->meta->make_immutable;
+
+
+__END__
+
+=head1 NAME
+
+DBMerge - Merge records from one database into another
+
+=head1 DESCRIPTION
+
+This module provides a framework and support code for reading records from
+one database and inserting them into another.  You would typically use it via
+a wrapper script and a derived class.
+
+Your wrapper script would define the database connection parameters and
+would then call the C<do_merge()> method in the derived class.  It could be
+as simple as:
+
+  use MyAppMerge;
+
+  MyAppMerge->do_merge(
+      verbose         => 0,   # turn on for debugging
+      source_dsn      => "dbi:Pg:dbname=myapp-source",
+      source_db_user  => 'myapp'
+      source_db_attr  => { pg_enable_utf8 => 1 },
+      target_dsn      => "dbi:Pg:dbname=myapp-target",
+      target_db_user  => 'myapp'
+      target_db_attr  => { pg_enable_utf8 => 1 },
+  );
+
+The derived class will inherit all the good stuff from the C<DBMerge> class
+and will add the necessary logic for dealing with the data in your application.
+There's only one method that the wrapper class I<must> implement and additional
+methods can be added to override default behaviours.  The most basic skeleton
+for the derived class would be:
+
+  package MyAppMerge;
+
+  use Moose;
+  extends 'DBMerge';
+
+
+  my $table_handlers = [
+
+      # Define how to handle each table - see below
+
+  ];
+
+  sub table_handlers {
+      return $table_handlers;
+  }
+
+  __PACKAGE__->meta->make_immutable;
+
+If you omit the C<table_handlers> method you can run the wrapper script
+and it will connect to the source database, examine the tables and emit a
+better starting skeleton that you can paste in.
+
+The code does just use DBI so it should work with any database, however the
+original target was an app running on Postgres so there are probably a number
+of Postgres-specific assumptions in the code.
+
+=head1 THE MERGE PROCESS
+
+The basic premise is that the merge process will iterate through every table
+in the source database and 'handle' it in some way (e.g.: it might copy every
+row to the target database).  The C<table_handlers()> method simply returns
+a data structure that defines the order in which the tables should be considered
+and which handler method should be used for each table.  A number of handler
+methods are provided and you can write your own if you have very specific
+requirements.
+
+Once all of the table handlers have been executed, a check is made to ensure
+that every table has been 'handled' - if not, an error will be emitted for each
+unhandled table.  If you only need to work with a subset of the tables you can
+override the C<check_unconverted()> method with a no-op.
+
+Finally, the error count will be checked.  If the count is non-zero then the
+merge will be aborted.  If no errors have occurred then the merge will be
+committed.  The default implementation does the whole merge in a single
+transaction so that it either completes without error or does nothing at all
+(apart from perhaps incrementing some sequences).  This should be fine for
+datasets with hunderds of thousands of rows but may not be appropriate if
+you have to deal with millions of rows.  You can call commit more regularly in
+your handler methods if necessary.
+
+=head1 TABLE HANDLERS
+
+If you run the wrapper script with valid database connection details but no
+implementation of the C<table_handlers()> method then you'll get a skeleton
+definition like this:
+
+  $table_handlers = [     # row_count_estimates
+      al_links                => [      0 ],
+      attachments             => [  3_716 ],
+      auth_sources            => [      1 ],
+      boards                  => [      2 ],
+      burndown_days           => [      0 ],
+      # ...
+  ];
+
+  sub table_handlers { return $table_handlers; }
+
+The C<table_handlers()> method should simply return a reference to an array of
+C<< table-name => [ handler-name ] >> pairs.  Some high-level things to note:
+
+=over 4
+
+=item *
+
+The main data structure is an array not a hash - don't be fooled by the C<<
+name => value >> pairs.  It has to be an array because the tables will need to
+be 'handled' in a specific order.
+
+=item *
+
+The default skeleton structure simply lists every table in alphabetical order.
+You will need to re-order the entries to ensure data from one table is copied
+over before a later table needs to reference it.
+
+=item *
+
+The handler definition is in square brackets because it is also an array - any
+extra values will be passed to the handler method.
+
+=item *
+
+The generated skeleton provides a number in the array.  This number is an
+estimate of the number of rows in the table.  Providing a number instead of a
+handler name is valid but does nothing - so you can run the skeleton code and
+it will consider all the tables to be 'unhandled'.
+
+=back
+
+As you decide what the handling for each table will be, you'll change the
+number in square brackets to a name and possibly adding some additional
+arguments.  If for example your declaration for one table looked like this:
+
+  status_codes      => [ 'merge_statuses', 'arg1', 'arg2' ],
+
+Then when this table was reached in the main loop, the
+C<handle_merge_statuses()> method would be called and it would be passed the
+table name followed by the extra arguments, so the signature would look like
+this:
+
+  sub handle_merge_statuses {
+      my $self  = shift;    # use to get access to DB handles etc
+      my $table = shift;    # 'status_codes'
+      my @args  = @_;       # 'arg1', 'arg2'
+      # logic here
+  }
+
+Of course the whole point of this framework is that it provides a number of
+pre-defined handlers which you can simply name rather than writing code.  The
+supplied handlers are:
+
+=head2 skip
+
+You may have a number of tables that do not contain data that needs to be
+copied over (perhaps because you're going to manually set up those records
+in advance on the target system via the application user interface).  In
+such cases, you can simply set the handler to C<'skip'>:
+
+  sessions          => [ 'skip' ],
+
+Having decided that a table can be skipped, you may like to add a comment or
+an extra argument that documents why you decided not to copy the data:
+
+  sessions          => [ 'skip' ], # will force users to log back in
+  hot_deals         => [ 'skip', 'deals will have expired' ],
+
+The supplied C<skip_handler()> method will silently ignore any extra arguments.
+
+=head2 skip_empty
+
+If you assess a table and find that it has no rows then you might use the
+C<skip_empty> handler.  Like C<skip>, this handler will not copy any data,
+however it will check that the table actually is empty and will emit an error
+if any rows are found.  So you would use this method to document your
+assumption that the table contains no rows and to ensure that you will be
+notified if the situation changes and your assumption later proves to be false:
+
+  employee_perks    => [ 'skip_empty' ],
+
+=head2 skip_subset
+
+Some tables contain fairly static data that might have been added during the
+initial installation of the app.  You can use this handler method to assert
+that every row that exists in the source database already exists in the target
+database.  The <skip_subset> handler will compare all rows from the source with
+all rows from the target and will emit an error if any are missing (extra rows
+on the target are silently ignored):
+
+  config_items      => [ 'skip_subset' ],
+
+The comparison works by doing a 'SELECT *' from each table (source and target)
+and turning each row into a string like C<< '1|Date format|DD/MM/YYYY' >>.
+These strings are then slurped into memory and sorted alphabetically.  The two
+lists (source vs target) are then diffed and missing records will be described
+in diff format.  The rows being compared must be identical - right down to the
+serial primary key if there is one.
+
+=head2 build_mapping
+
+Use this handler if you have a table that does have the same records on both
+source and target, but possibly with different IDs:
+
+  users             => [ 'build_mapping', 'email' => 'id' ],
+
+In this case you might have manually added users to the target system in
+advance of doing the data merge.  When this handler method runs, it doesn't
+copy any data, instead it queries both sides and builds up a hash mapping the
+id from the source table with the id of the matching record from the target
+table.  In the example above, the value in the 'email' column will be used to
+match records.
+
+An error will be emitted if a record on the source side has no corresponding
+record on the target side.
+
+The result of running this method is that a mapping will be created which can
+be referenced by later handlers.  The mapping name is a string of the form
+C<'table_name.column_name'>.  So for example the declaration above would
+produce a mapping called C<'users.id'>.  The C<'copy_rows'> handler (described
+below) can map column values in other tables using this mapping.
+
+=head2 mapping_table
+
+This handler has a similar use case to C<'build_mapping'> (above) except this
+is for situations where records cannot be automatically matched.  Instead, you
+will add table to the source database which contains the ID mapping, along with
+a description field.  This handler will slurp the rows from this table into a
+mapping hash and will check that every row from the source table has a
+corresponding entry in the mapping table.  The declaration might look like
+this:
+
+  projects          => [ 'mapping_table', 'project_desc' => 'id' ],
+
+You might use SQL like this to create the mapping table:
+
+  CREATE TABLE _mapping_projects (
+      source_project_desc   TEXT NOT NULL,
+      source_id             INTEGER NOT NULL,
+      target_id             INTEGER
+  );
+
+  INSERT INTO _mapping_projects VALUES
+      ('Project Myrtle', 1, 315),
+      ('Moon shot',      2, 316);
+
+The name of the mapping table is the same as the table being 'handled' except
+with the added prefix '_mapping_'.
+
+The first column in the mapping table is for documentation purposes only.  In
+the event that the referenced ID does not exist in the target table, the
+description column value is used in the emitted error.
+
+=head2 check_no_errors
+
+None of the handlers described above will add any data to the target database
+(some will read from it).  You would typically declare all the non-write
+handlers first and then add a handler declaration like this:
+
+  ''                => [ 'check_no_errors' ],
+
+This will abort with a fatal exception if any of the proceeding handlers
+emitted an error.  I.e. it is only worth proceeding with subsequent handlers
+if there have been no error up to this point.
+
+=head2 copy_rows
+
+This is the only standard handler method that will actually SELECT records from
+the source database and INSERT them into the target database.  It is a
+workhorse method with a number of options for customising its behaviour.  A
+simple example to copy all rows in the C<'tasks'> table might be:
+
+    tasks             => [ copy_rows => {
+        order_by          => 'id',
+    }],
+
+As you can see, the C<'copy_rows'> handler takes a hash of options.  The
+'order_by' option must always be specified.
+
+The 'condition' option can be used to be more selective about which records are
+SELECTed from the source database.  The value of 'condition' will be copied
+verbatim into the generated SQL SELECT statement so it can make use of
+sub-queries:
+
+    tasks             => [ copy_rows => {
+        condition         => "WHERE task_status <> 'CANCELLED'",
+        order_by          => 'id',
+    }],
+
+Another common requirement is to use the mappings defined earlier to rewrite
+some columns on the fly.  For example in cases where related records exists in
+both databases, but with different ID values, column values can be rewritten
+using the mapping hashes defined above, like this:
+
+    tasks             => [ copy_rows => {
+        condition         => "WHERE task_status <> 'CANCELLED'",
+        order_by          => 'id',
+        column_mappings   => [
+            owner_user_id   => 'users.id',
+            project_id      => 'projects.id',
+        ],
+    }],
+
+Every column value that is not 'mapped' will simply be copied, including
+serial primary key values.  In order to avoid conflicts in the target database,
+you might bump a sequence to leave a pre-allocated range of available ID values.
+Then you might define a method (in your derived class) to allocate IDs from
+the range:
+
+    tasks             => [ copy_rows => {
+        condition         => "WHERE task_status <> 'CANCELLED'",
+        order_by          => 'id',
+        column_mappings   => [
+            id              => 'map_task_id(id)',
+            owner_user_id   => 'users.id',
+            project_id      => 'projects.id',
+        ],
+    }],
+
+In this example, you will be defining a C<map_task_id()> method which will be
+passed the value of the 'id' column from the source database record.  If the
+option was set to 'map_task_id(*)' then the method would be passed a hashref of
+all the column values.
+
+If the primary key of a record is being changed, you can use the 'make_mapping'
+option to build up a new mapping to be used by later tables to refer to records
+in this table:
+
+    tasks             => [ copy_rows => {
+        condition         => "WHERE task_status <> 'CANCELLED'",
+        order_by          => 'id',
+        column_mappings   => [
+            id              => 'map_task_id(id)',
+            owner_user_id   => 'users.id',
+            project_id      => 'projects.id',
+        ],
+        make_mapping      => 'id',
+    }],
+
+This example will create a mapping called 'tasks.id'.  You can also use the
+'save_mapping' option to save a permanent record of the mapping generated into
+a file in JSON format:
+
+    tasks             => [ copy_rows => {
+        condition         => "WHERE task_status <> 'CANCELLED'",
+        order_by          => 'id',
+        column_mappings   => [
+            id              => 'map_task_id(id)',
+            owner_user_id   => 'users.id',
+            project_id      => 'projects.id',
+        ],
+        make_mapping      => 'id',
+        save_mapping      => 'tasks-id-mapping.json',
+    }],
+
+You can also call methods to make aribtrary changes to column values before or
+after the 'column_mappings' have been applied, using the 'pre_map_method' and
+'post_map_method' options.  When these methods are called, they will be
+passed a hashref of column values and they can simply overwrite values in the
+hash to change the data that will be written to the target database.
+
+    tasks             => [ copy_rows => {
+        condition         => "WHERE task_status <> 'CANCELLED'",
+        order_by          => 'id',
+        pre_map_method    => 'pre_map_tasks',
+        column_mappings   => [
+            id              => 'map_task_id(id)',
+            owner_user_id   => 'users.id',
+            project_id      => 'projects.id',
+        ],
+        post_map_method   => 'post_map_tasks',
+        make_mapping      => 'id',
+        save_mapping      => 'tasks-id-mapping.json',
+    }],
+
+Another way to handle mapping the primary key is to omit the column from the
+insert statement and then build a mapping of the value that was assigned on
+the target database using the 'last_insert_id' option:
+
+    tasks             => [ copy_rows => {
+        condition         => "WHERE task_status <> 'CANCELLED'",
+        order_by          => 'id',
+        omit_columns      => [ 'id' ],
+        column_mappings   => [
+            owner_user_id   => 'users.id',
+            project_id      => 'projects.id',
+        ],
+        last_insert_id    => [ 'tasks_id_seq' => 'id' ],
+        make_mapping      => 'id',
+        save_mapping      => 'tasks-id-mapping.json',
+    }],
+
+This option requires that you provide the name of the sequence used to generate
+the default value, as well as the column name to be be used for the mapping
+(this is DBD::Pg-specific behaviour).
+
+=head1 APOLOGIES, DISCLAIMERS, ETC
+
+That's it for the documentation - feel free to ask questions by email or via
+Github issues.
+
+The code would probably need significant tweaking to work with a non-Postgres
+database - I haven't needed to do that yet.
+
+=head1 COPYRIGHT
+
+Copyright 2016 Grant McLean E<lt>grantm@cpan.orgE<gt>
+
+This library is free software; you can redistribute it and/or modify it
+under the same terms as Perl itself.
+
+=cut
+
