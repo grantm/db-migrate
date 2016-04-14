@@ -451,7 +451,7 @@ sub make_copy_sub {
             1;
         } or do {
             my $mesg = "$@";
-            if($self->was_skipped($@)) {
+            if($self->_was_skipped($@)) {
                 say "[--Skipped--]" if $self->verbose;
             }
             else {
@@ -471,7 +471,7 @@ sub skip_record {
 }
 
 
-sub was_skipped {
+sub _was_skipped {
     my $self = shift;
     my $exception = shift // '';
     return !ref($exception) && $exception eq "SKIP\n";
@@ -1219,6 +1219,14 @@ hash to change the data that will be written to the target database.
         save_mapping      => 'tasks-id-mapping.json',
     }],
 
+A pre or post mapping method can optionally call:
+
+  $self->skip_record();
+
+This will cause the current record to be skipped - i.e.: not copied to the
+target database.  The remaining lines of the method will also be skipped since
+the skip method is implemented using an exception.
+
 Another way to handle mapping the primary key is to omit the column from the
 insert statement and then build a mapping of the value that was assigned on
 the target database using the 'last_insert_id' option:
@@ -1239,6 +1247,112 @@ the target database using the 'last_insert_id' option:
 This option requires that you provide the name of the sequence used to generate
 the default value, as well as the column name to be be used for the mapping
 (this is DBD::Pg-specific behaviour).
+
+=head1 OTHER METHODS
+
+=head2 do_merge( )
+
+Main entry point.  Simply calls the constructor, C<handle_each_table()>,
+C<check_unconverted()> and C<check_errors()>
+
+=head2 check_columns( )
+
+The check_columns method will be called automatically for every table that is
+not being skipped.  This method is passed a table name and simply checks that
+the source and target tables have exactly the same columns.  Override this
+method to simply return if you don't want this functionality.
+
+=head2 skip_record( )
+
+Call this from your pre/post map method to indicate that the current row should
+not be inserted into the target database.
+
+=head2 parse_copy_spec( )
+
+Helper method for C<handle_copy_rows()>, validates and normalises the hash of
+arguments.
+
+=head2 make_copy_sub( )
+
+Called by C<parse_copy_spec()> to generate an anonymous subroutine that will
+take a record hashref, apply mappings, call pre/post map methods and run the
+insert in the target database.
+
+=head2 build_mapper( )
+
+Called by C<make_copy_sub()> to generate an anonymous subroutine that will
+apply the mappings.
+
+=head2 make_method_mapper( )
+
+Called by C<build_mapper()> to implement a method mapper.
+
+=head2 make_simple_mapper( )
+
+Called by C<build_mapper()> to implement a lookup in a mapping table.
+
+=head2 prepare_copy_insert( )
+
+Called by C<make_copy_sub()> to generate an anonymous subroutine that will
+execute the insert statement with appropriate bind parameters and optionally
+retrieve the last_insert_id.
+
+=head2 dump_record( )
+
+Formats up an plain text dump of the supplied record.  It can dump a before and
+after view with an indicator next to each modified value.
+
+If called in a scalar context the formatted dump will be returned as a string.
+In void context the dump will be printed to STDOUT.  This method is called
+automatically for every record if the verbose option is enabled and will aslo
+be called on the last record in the event of a fatal error.
+
+=head2 check_unconverted( )
+
+Checks that all tables have been 'handled' and emits an error for any which
+have not.
+
+=head2 check_errors( )
+
+Checks if there have been any errors and returns a value suitable for use as
+an exit status (1 for errors, 0 for no errors).
+
+This method will also call C<target_commit()> if there were no errors.
+
+=head2 error( )
+
+Call this to print out an error message and increment the error count.
+
+=head2 each_source_row( )
+
+=head2 each_target_row( )
+
+Run a SQL SELECT statement and iterate over the resulting rows, calling the
+supplied sub once for each row.
+
+=head2 map_source_rows( )
+
+=head2 map_target_rows( )
+
+Run a SQL SELECT statement and iterate over the resulting rows, calling the
+supplied sub once for each row and returning an array of the accumulated
+return values.
+
+=head2 target_commit( )
+
+Calls C<commit()> on the DBI database handle for the target DB connection.
+This will be called once at the end if there were no errors.  You can call it
+more often if you don't want to do the whole merge in a single transaction.
+
+=head2 source_row_count( )
+
+Return a count of rows in the specified table in the source database.
+
+=head2 source_columns_for_table( )
+
+=head2 target_columns_for_table( )
+
+Returns an array listing the columns of the specified table.
 
 =head1 APOLOGIES, DISCLAIMERS, ETC
 
