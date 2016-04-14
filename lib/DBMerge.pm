@@ -434,7 +434,7 @@ sub make_copy_sub {
             if(my $method = $spec->{pre_map_method}) {
                 if(($self->$method($old) // '') eq 'SKIP') {
                     $spec->{rows_skipped}++;
-                    return;
+                    $self->skip_record;  # Throws exception
                 }
             }
             if($spec->{mapper}) {
@@ -444,20 +444,37 @@ sub make_copy_sub {
             if(my $method = $spec->{post_map_method}) {
                 if(($self->$method($new) // '') eq 'SKIP') {
                     $spec->{rows_skipped}++;
-                    return;
+                    $self->skip_record;  # Throws exception
                 }
             }
             $spec->{insert_sub}->($new);
             1;
         } or do {
             my $mesg = "$@";
-            die $mesg . $self->dump_record($table, $old, $new);
+            if($self->was_skipped($@)) {
+                say "[--Skipped--]" if $self->verbose;
+            }
+            else {
+                die $mesg . $self->dump_record($table, $old, $new)
+            }
         };
         if($map_col) {
             $output_map->{ $old->{$map_col} } = $new->{$map_col};
         }
         $spec->{rows_copied}++;
     };
+}
+
+
+sub skip_record {
+    die "SKIP\n";
+}
+
+
+sub was_skipped {
+    my $self = shift;
+    my $exception = shift // '';
+    return !ref($exception) && $exception eq "SKIP\n";
 }
 
 
